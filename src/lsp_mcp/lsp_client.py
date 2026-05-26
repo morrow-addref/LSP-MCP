@@ -1,4 +1,4 @@
-"""LSP client — manages the Roslyn language server subprocess and JSON-RPC communication."""
+"""LSP client — manages a language server subprocess and JSON-RPC communication."""
 
 import asyncio
 import json
@@ -159,17 +159,18 @@ class LspClient:
         except OSError as e:
             raise RuntimeError(f"Cannot read file: {e}")
 
-        # Always close and reopen to ensure Roslyn analyzes current disk content
+        # Always close and reopen to ensure the server analyzes current disk content
         if uri in self._open_docs:
             await self.send_notification("textDocument/didClose", {
                 "textDocument": {"uri": uri},
             })
 
+        language_id = self._config.language_id_for(file_path)
         self._doc_version[uri] = self._doc_version.get(uri, 0) + 1
         await self.send_notification("textDocument/didOpen", {
             "textDocument": {
                 "uri": uri,
-                "languageId": "csharp",
+                "languageId": language_id,
                 "version": self._doc_version[uri],
                 "text": text,
             }

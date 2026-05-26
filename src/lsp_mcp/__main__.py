@@ -10,7 +10,7 @@ from .lsp_client import LspClient
 from .mcp_server import create_server
 
 
-async def run(workspace: str | None):
+async def run(workspace: str | None, language: str | None):
     """Start the LSP client and MCP server."""
     logging.basicConfig(
         level=logging.INFO,
@@ -20,7 +20,7 @@ async def run(workspace: str | None):
     logger = logging.getLogger("lsp_mcp")
 
     # Load config
-    config = load_config(workspace)
+    config = load_config(workspace, language=language)
     logger.info("Workspace: %s", config.workspace_root)
 
     # Create LSP client and MCP server
@@ -45,17 +45,23 @@ async def run(workspace: str | None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LSP-MCP: Roslyn language server bridge for AI agents")
+    parser = argparse.ArgumentParser(description="LSP-MCP: Language server bridge for AI agents")
     parser.add_argument(
         "--workspace", "-w",
         type=str,
         default=None,
         help="Workspace root directory (defaults to cwd). Must contain .github/lsp.json.",
     )
+    parser.add_argument(
+        "--language", "-l",
+        type=str,
+        default=None,
+        help="Server entry name from lsp.json (e.g. 'csharp', 'python'). Defaults to first entry.",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(run(args.workspace))
+        asyncio.run(run(args.workspace, args.language))
     except KeyboardInterrupt:
         pass
     except FileNotFoundError as e:

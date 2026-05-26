@@ -1,4 +1,4 @@
-"""MCP server — exposes Roslyn diagnostics tools split by severity."""
+"""MCP server — exposes LSP diagnostics tools split by severity."""
 
 import json
 import logging
@@ -112,7 +112,8 @@ async def _handle_diagnostics(client: LspClient, args: dict, severities: set[int
         uri = await client.open_document(file_path)
         all_diags = await _pull_diagnostics(client, uri)
         filtered = [d for d in all_diags if d.get("severity", 1) in severities]
-        result = _format_diagnostics(file_path, filtered)
+        # Omit file path from output — caller already knows which file they asked about
+        result = _format_diagnostics(None, filtered)
     else:
         # Return all cached diagnostics matching severity
         result = []
@@ -141,21 +142,23 @@ async def _handle_status(client: LspClient) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(status, indent=2))]
 
 
-def _format_diagnostics(file_path: str, diagnostics: list[dict]) -> list[dict]:
+def _format_diagnostics(file_path: str | None, diagnostics: list[dict]) -> list[dict]:
     """Format raw LSP diagnostics into concise output."""
     result = []
     for diag in diagnostics:
         start = diag.get("range", {}).get("start", {})
         severity_num = diag.get("severity", 1)
         severity_map = {1: "error", 2: "warning", 3: "info", 4: "hint"}
-        result.append({
-            "file": file_path,
+        entry = {
             "line": start.get("line", 0) + 1,
             "col": start.get("character", 0) + 1,
             "severity": severity_map.get(severity_num, "unknown"),
             "message": diag.get("message", ""),
             "code": diag.get("code", ""),
-        })
+        }
+        if file_path:
+            entry["file"] = file_path
+        result.append(entry)
     return result
 
 

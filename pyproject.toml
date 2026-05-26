@@ -1,11 +1,10 @@
 [project]
 name = "lsp-mcp"
-version = "0.1.0"
-description = "Minimal MCP server bridging Roslyn LSP diagnostics and hierarchy tools to AI agents"
+version = "0.2.0"
+description = "Minimal MCP server bridging any LSP language server's diagnostics to AI agents"
 requires-python = ">=3.11"
 dependencies = [
     "mcp",
-    "lsprotocol",
 ]
 
 [project.scripts]
