@@ -180,22 +180,18 @@ class LspClient:
         return uri
 
     async def wait_for_diagnostics(self, uri: str, timeout: float = 5.0) -> list[dict]:
-        """Wait for diagnostics to arrive for a URI, with exponential backoff."""
-        # If we already have diagnostics cached (even empty list), return immediately
+        """Wait for diagnostics to arrive for a URI using an event-based approach."""
+        # If already cached, return immediately
         if uri in self._diagnostics:
             return self._diagnostics[uri]
 
-        # Poll with backoff
-        elapsed = 0.0
-        delay = 0.1
-        while elapsed < timeout:
-            await asyncio.sleep(delay)
-            elapsed += delay
-            if uri in self._diagnostics:
-                return self._diagnostics[uri]
-            delay = min(delay * 2, 1.0)
+        # Wait for the diagnostics event to fire (set by _handle_notification)
+        self._diagnostics_event.clear()
+        try:
+            await asyncio.wait_for(self._diagnostics_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
 
-        # Timeout — return empty (diagnostics may arrive later)
         return self._diagnostics.get(uri, [])
 
     # --- Internal JSON-RPC transport ---

@@ -82,15 +82,10 @@ def create_server(lsp_client: LspClient) -> Server:
 
 
 async def _pull_diagnostics(client: LspClient, uri: str) -> list[dict]:
-    """Get diagnostics for a URI — wait for push, then try pull as fallback."""
+    """Get diagnostics — pull first (fast), push-wait as fallback."""
     import asyncio
 
-    # Wait for push diagnostics (Roslyn should send after didOpen)
-    diagnostics = await client.wait_for_diagnostics(uri, timeout=5.0)
-    if diagnostics:
-        return diagnostics
-
-    # Pull model fallback
+    # Strategy: try pull immediately (Roslyn responds in ~50-200ms with current state)
     try:
         pull_result = await client.send_request("textDocument/diagnostic", {
             "textDocument": {"uri": uri},
@@ -99,6 +94,11 @@ async def _pull_diagnostics(client: LspClient, uri: str) -> list[dict]:
             return pull_result["items"]
     except Exception as e:
         logger.debug("Pull diagnostics failed: %s", e)
+
+    # If pull returned empty, wait briefly for push (Roslyn may still be analyzing)
+    diagnostics = await client.wait_for_diagnostics(uri, timeout=2.0)
+    if diagnostics:
+        return diagnostics
 
     return []
 
