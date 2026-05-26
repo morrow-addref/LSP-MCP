@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .config import LspConfig
+from .config import LspServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class LspClient:
     """Async LSP client that spawns a language server and communicates via stdio JSON-RPC."""
 
-    def __init__(self, config: LspConfig):
+    def __init__(self, config: LspServerConfig):
         self._config = config
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1

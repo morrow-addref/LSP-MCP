@@ -10,8 +10,8 @@ from .lsp_client import LspClient
 from .mcp_server import create_server
 
 
-async def run(workspace: str | None, language: str | None):
-    """Start the LSP client and MCP server."""
+async def run(workspace: str | None):
+    """Start all LSP clients and the MCP server."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -19,29 +19,35 @@ async def run(workspace: str | None, language: str | None):
     )
     logger = logging.getLogger("lsp_mcp")
 
-    # Load config
-    config = load_config(workspace, language=language)
+    # Load config — gracefully handles missing lsp.json
+    config = load_config(workspace)
     logger.info("Workspace: %s", config.workspace_root)
+    logger.info("LSP servers configured: %s", list(config.servers.keys()) or "(none)")
 
-    # Create LSP client and MCP server
-    lsp_client = LspClient(config)
-    mcp_server = create_server(lsp_client)
+    # Create one LspClient per server entry
+    clients: dict[str, LspClient] = {}
+    for prefix, server_config in config.servers.items():
+        clients[prefix] = LspClient(server_config)
+
+    # Create MCP server with all clients
+    mcp_server = create_server(clients)
 
     # Run MCP server on stdio — start immediately so the CLI can handshake.
-    # LSP initialization happens lazily on first tool call.
     from mcp.server.stdio import stdio_server
 
     async with stdio_server() as (read_stream, write_stream):
-        # Start LSP in background while MCP handshake proceeds
-        init_task = asyncio.ensure_future(lsp_client.start())
-        init_task.add_done_callback(
-            lambda t: logger.info("LSP ready") if not t.exception()
-            else logger.error("LSP init failed: %s", t.exception())
-        )
+        # Start all LSP servers in background while MCP handshake proceeds
+        for prefix, client in clients.items():
+            task = asyncio.ensure_future(client.start())
+            task.add_done_callback(
+                lambda t, p=prefix: logger.info("[%s] LSP ready", p) if not t.exception()
+                else logger.error("[%s] LSP init failed: %s", p, t.exception())
+            )
         await mcp_server.run(read_stream, write_stream, mcp_server.create_initialization_options())
 
-    # Cleanup
-    await lsp_client.stop()
+    # Cleanup all clients
+    for client in clients.values():
+        await client.stop()
 
 
 def main():
@@ -52,21 +58,12 @@ def main():
         default=None,
         help="Workspace root directory (defaults to cwd). Must contain .github/lsp.json.",
     )
-    parser.add_argument(
-        "--language", "-l",
-        type=str,
-        default=None,
-        help="Server entry name from lsp.json (e.g. 'csharp', 'python'). Defaults to first entry.",
-    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(run(args.workspace, args.language))
+        asyncio.run(run(args.workspace))
     except KeyboardInterrupt:
         pass
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
 
 
 if __name__ == "__main__":

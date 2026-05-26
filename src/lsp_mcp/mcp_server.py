@@ -1,4 +1,4 @@
-"""MCP server — exposes LSP diagnostics tools split by severity."""
+"""MCP server — exposes LSP diagnostics tools, prefixed per language server."""
 
 import json
 import logging
@@ -17,9 +17,25 @@ _SEV_WARNING = 2
 _SEV_INFO = 3
 _SEV_HINT = 4
 
+_SEVERITY_TOOLS = {
+    "get_errors": (_SEV_ERROR,),
+    "get_warnings": (_SEV_WARNING,),
+    "get_info": (_SEV_INFO, _SEV_HINT),
+}
 
-def create_server(lsp_client: LspClient) -> Server:
-    """Create the MCP server with tool handlers bound to the given LSP client."""
+_TOOL_DESCRIPTIONS = {
+    "get_errors": "Get compiler errors for a file. Use after making code changes to catch compilation failures.",
+    "get_warnings": "Get compiler warnings for a file. Use for code review or when asked about potential issues.",
+    "get_info": "Get info/hint diagnostics (IDE analyzers, style rules). Only use when explicitly asked.",
+}
+
+
+def create_server(clients: dict[str, LspClient]) -> Server:
+    """Create the MCP server with tool handlers bound to the given LSP clients.
+
+    Args:
+        clients: Mapping of prefix → LspClient (e.g. {"cs": client, "py": client}).
+    """
     server = Server("lsp-mcp")
 
     _diag_schema = {
@@ -35,45 +51,44 @@ def create_server(lsp_client: LspClient) -> Server:
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
-        return [
-            Tool(
-                name="get_errors",
-                description="Get compiler errors for a file. Use after making code changes to catch compilation failures.",
-                inputSchema=_diag_schema,
-            ),
-            Tool(
-                name="get_warnings",
-                description="Get compiler warnings for a file. Use for code review or when asked about potential issues.",
-                inputSchema=_diag_schema,
-            ),
-            Tool(
-                name="get_info",
-                description="Get info/hint diagnostics (IDE analyzers, style rules). Only use when explicitly asked.",
-                inputSchema=_diag_schema,
-            ),
-            Tool(
-                name="lsp_status",
-                description="Get LSP server status: initialization state, open documents, diagnostics cache.",
-                inputSchema={"type": "object", "properties": {}, "required": []},
-            ),
-        ]
+        tools = []
+        for prefix in sorted(clients.keys()):
+            for tool_name, description in _TOOL_DESCRIPTIONS.items():
+                tools.append(Tool(
+                    name=f"{prefix}_{tool_name}",
+                    description=f"[{prefix}] {description}",
+                    inputSchema=_diag_schema,
+                ))
+        # Always expose lsp_status regardless of server count
+        tools.append(Tool(
+            name="lsp_status",
+            description="Get LSP server status: initialization state, open documents, diagnostics cache.",
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ))
+        return tools
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        if not lsp_client.is_initialized:
-            return [TextContent(type="text", text="LSP server not yet initialized. Please wait.")]
+        if name == "lsp_status":
+            return await _handle_status(clients)
+
+        # Parse prefix from tool name (e.g. "cs_get_errors" → prefix="cs", tool="get_errors")
+        parts = name.split("_", 1)
+        if len(parts) != 2 or parts[0] not in clients:
+            return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
+        prefix, tool_name = parts
+        client = clients[prefix]
+
+        if not client.is_initialized:
+            return [TextContent(type="text", text=f"[{prefix}] LSP server not yet initialized. Please wait.")]
+
+        if tool_name not in _SEVERITY_TOOLS:
+            return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
         try:
-            if name == "get_errors":
-                return await _handle_diagnostics(lsp_client, arguments, {_SEV_ERROR})
-            elif name == "get_warnings":
-                return await _handle_diagnostics(lsp_client, arguments, {_SEV_WARNING})
-            elif name == "get_info":
-                return await _handle_diagnostics(lsp_client, arguments, {_SEV_INFO, _SEV_HINT})
-            elif name == "lsp_status":
-                return await _handle_status(lsp_client)
-            else:
-                return [TextContent(type="text", text=f"Unknown tool: {name}")]
+            severities = set(_SEVERITY_TOOLS[tool_name])
+            return await _handle_diagnostics(client, arguments, severities)
         except Exception as e:
             logger.error("Tool %s failed: %s", name, e, exc_info=True)
             return [TextContent(type="text", text=f"Error: {e}")]
@@ -85,7 +100,6 @@ async def _pull_diagnostics(client: LspClient, uri: str) -> list[dict]:
     """Get diagnostics — pull first (fast), push-wait as fallback."""
     import asyncio
 
-    # Strategy: try pull immediately (Roslyn responds in ~50-200ms with current state)
     try:
         pull_result = await client.send_request("textDocument/diagnostic", {
             "textDocument": {"uri": uri},
@@ -95,7 +109,7 @@ async def _pull_diagnostics(client: LspClient, uri: str) -> list[dict]:
     except Exception as e:
         logger.debug("Pull diagnostics failed: %s", e)
 
-    # If pull returned empty, wait briefly for push (Roslyn may still be analyzing)
+    # If pull returned empty, wait briefly for push
     diagnostics = await client.wait_for_diagnostics(uri, timeout=2.0)
     if diagnostics:
         return diagnostics
@@ -131,14 +145,18 @@ async def _handle_diagnostics(client: LspClient, args: dict, severities: set[int
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
-async def _handle_status(client: LspClient) -> list[TextContent]:
+async def _handle_status(clients: dict[str, LspClient]) -> list[TextContent]:
     """Return LSP server status for debugging."""
-    status = {
-        "initialized": client.is_initialized,
-        "open_documents": list(client._open_docs),
-        "diagnostics_uris": list(client.diagnostics.keys()),
-        "diagnostics_counts": {uri: len(diags) for uri, diags in client.diagnostics.items()},
-    }
+    status = {}
+    for prefix, client in clients.items():
+        status[prefix] = {
+            "initialized": client.is_initialized,
+            "open_documents": list(client._open_docs),
+            "diagnostics_uris": list(client.diagnostics.keys()),
+            "diagnostics_counts": {uri: len(diags) for uri, diags in client.diagnostics.items()},
+        }
+    if not status:
+        return [TextContent(type="text", text="No LSP servers configured. Create .github/lsp.json in the workspace root.")]
     return [TextContent(type="text", text=json.dumps(status, indent=2))]
 
 

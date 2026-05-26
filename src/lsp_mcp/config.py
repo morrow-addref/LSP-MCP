@@ -29,7 +29,9 @@ _DEFAULT_EXTENSIONS: dict[str, str] = {
 
 
 @dataclass
-class LspConfig:
+class LspServerConfig:
+    """Configuration for a single LSP server."""
+    prefix: str
     command: str
     args: list[str]
     workspace_root: str
@@ -46,12 +48,18 @@ class LspConfig:
         return "plaintext"
 
 
-def load_config(workspace_root: str | None = None, language: str | None = None) -> LspConfig:
+@dataclass
+class WorkspaceConfig:
+    """Top-level configuration: workspace root + all LSP server entries."""
+    workspace_root: str
+    servers: dict[str, LspServerConfig] = field(default_factory=dict)
+
+
+def load_config(workspace_root: str | None = None) -> WorkspaceConfig:
     """Load LSP server configuration from .github/lsp.json in the workspace root.
 
-    Args:
-        workspace_root: Path to the workspace root (defaults to cwd).
-        language: Name of the server entry to use (e.g. "csharp"). Defaults to first entry.
+    Returns a WorkspaceConfig with zero or more server entries.
+    Missing or empty config is not an error — the MCP server starts with no LSP tools.
     """
     if workspace_root is None:
         workspace_root = os.getcwd()
@@ -60,38 +68,23 @@ def load_config(workspace_root: str | None = None, language: str | None = None) 
     config_path = os.path.join(workspace_root, ".github", "lsp.json")
 
     if not os.path.isfile(config_path):
-        raise FileNotFoundError(
-            f"LSP config not found at {config_path}. "
-            f"Expected format: {{\"lspServers\": {{\"csharp\": {{\"command\": \"...\", \"args\": [...]}}}}}}"
-        )
+        return WorkspaceConfig(workspace_root=workspace_root)
 
     with open(config_path) as f:
         data = json.load(f)
 
-    servers = data.get("lspServers", {})
-    if not servers:
-        raise ValueError(f"No LSP servers defined in {config_path}")
-
-    if language:
-        if language not in servers:
-            available = ", ".join(servers.keys())
-            raise ValueError(f"Server '{language}' not found in {config_path}. Available: {available}")
-        server_name = language
-    else:
-        server_name = next(iter(servers))
-
-    server_config = servers[server_name]
-
-    command = server_config["command"]
-    args = server_config.get("args", [])
-    file_extensions = server_config.get("fileExtensions", {})
-
+    servers_data = data.get("lspServers", {})
     root_uri = Path(workspace_root).as_uri()
 
-    return LspConfig(
-        command=command,
-        args=args,
-        workspace_root=workspace_root,
-        root_uri=root_uri,
-        file_extensions=file_extensions,
-    )
+    servers: dict[str, LspServerConfig] = {}
+    for prefix, server_data in servers_data.items():
+        servers[prefix] = LspServerConfig(
+            prefix=prefix,
+            command=server_data["command"],
+            args=server_data.get("args", []),
+            workspace_root=workspace_root,
+            root_uri=root_uri,
+            file_extensions=server_data.get("fileExtensions", {}),
+        )
+
+    return WorkspaceConfig(workspace_root=workspace_root, servers=servers)
